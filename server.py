@@ -1,18 +1,16 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 import requests
-import asyncio
 import random
 import re
 import logging
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# ─── HUGE curated human response bank ───────────────────────────────────────
+# Your existing RESPONSES dictionary (keeping it the same)
 RESPONSES = {
     "greeting": [
         "yo", "sup", "hey bro", "wassup", "yooo", "omg heyy",
@@ -102,7 +100,6 @@ RESPONSES = {
     ]
 }
 
-# ─── Intent detection ────────────────────────────────────────────────────────
 KEYWORDS = {
     "greeting":  ["hi", "hey", "hello", "sup", "yo", "wassup", "heyy", "ayo"],
     "play":      ["play", "wanna", "game", "join", "come", "lets", "let's", "squad"],
@@ -120,7 +117,6 @@ KEYWORDS = {
     "money":     ["robux", "money", "broke", "rich", "buy"],
 }
 
-# ─── Recent reply tracking (anti-repeat) ────────────────────────────────────
 recent_replies = []
 
 def detect_intent(message: str) -> str:
@@ -132,50 +128,39 @@ def detect_intent(message: str) -> str:
     return "default"
 
 def is_human_response(text: str) -> bool:
-    if not text or len(text.split()) > 12:  # Increased from 9
+    if not text or len(text.split()) > 8:
         return False
     
-    # More targeted formal detection
-    formal = [
-        "certainly", "absolutely", "indeed", "however", "therefore",
-        "furthermore", "additionally", "I am", "I will", "I would",
-        "assist", "help you", "of course", "please", "thank you",
-        "I'm here", "I can", "Let me", "I'd be", "explore",
-        "studying", "narrative", "instruction", "could you", "would you"
+    # Much stricter formal detection
+    formal_phrases = [
+        "hello", "how can i", "assist", "help you", "today", "certainly", 
+        "i am", "i will", "please", "thank you", "of course", "i'd be happy"
     ]
     
     text_lower = text.lower()
-    for word in formal:
-        if word.lower() in text_lower:
+    for phrase in formal_phrases:
+        if phrase in text_lower:
             return False
     
-    # Check if it has roblox/gaming slang
-    slang = ["bruh", "lol", "fr", "omg", "gg", "ngl", "bro", "ez", "ong", "bet"]
+    # Must have slang or be very short
+    slang = ["bruh", "lol", "fr", "omg", "gg", "ngl", "bro", "ez", "ong", "bet", "yo", "sup", "yep", "nah"]
     has_slang = any(word in text_lower for word in slang)
     
-    return has_slang or len(text.split()) <= 6  # Allow short responses even without slang
+    return has_slang or len(text.split()) <= 3
 
 def clean_reply(text: str) -> str:
     if not text:
         return ""
     
-    # Remove quotes and extra whitespace
     text = text.strip().strip('"').strip("'")
-    
-    # Remove markdown/formatting
     text = re.sub(r'\*.*?\*', '', text)
-    text = re.sub(r'`.*?`', '', text)
     
-    # Split on common separators and take first part
-    for separator in ["\n", "Player:", "->", "Message:", "Reply:"]:
+    # Take only first part before separators
+    for separator in ["\n", "Player:", "->", "Message:", "Reply:", "!", "?"]:
         text = text.split(separator)[0]
     
-    # Remove common AI prefixes
-    prefixes = ["reply:", "response:", "answer:", "bot:", "ai:"]
-    text_lower = text.lower()
-    for prefix in prefixes:
-        if text_lower.startswith(prefix):
-            text = text[len(prefix):].strip()
+    # Remove punctuation at the end
+    text = re.sub(r'[.!?]+$', '', text.strip())
     
     return text.strip()
 
@@ -191,7 +176,6 @@ def get_curated(intent: str) -> str:
         recent_replies.pop(0)
     return reply
 
-# ─── Routes ─────────────────────────────────────────────────────────────────
 class Message(BaseModel):
     player_name: str
     message: str
@@ -199,33 +183,30 @@ class Message(BaseModel):
 @app.post("/chat")
 async def chat(data: Message):
     intent = detect_intent(data.message)
-    loop = asyncio.get_event_loop()
-
+    
     try:
         logger.info(f"Attempting AI generation for: '{data.message}' (intent: {intent})")
         
-        response = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: requests.post(
-                "http://localhost:11434/api/generate",
-                json={
-                    "model": "qwen2:0.5b",
-                    "prompt": (
-                        f'Reply like a roblox kid. Super short, max 6 words, '
-                        f'all lowercase, use slang like: lol bruh gg fr omg ngl bro ez ong bet yep nah. '
-                        f'No formal words. Message from player: "{data.message}"\n'
-                        f'Roblox kid reply:'
-                    ),
-                    "stream": False,
-                    "options": {
-                        "temperature": 1.0,  # Increased creativity
-                        "num_predict": 12,   # Increased slightly
-                        "num_ctx": 64,       # Increased context
-                        "stop": ["\n", "Player", "Message", "->", ":", "Reply", "Response"]
-                    }
-                },
-                timeout=3  # Increased timeout
-            )),
-            timeout=4
+        # Much more aggressive prompt
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "qwen2:0.5b",
+                "prompt": (
+                    f"You are a 12 year old roblox player. Reply with only slang, no formal words ever. "
+                    f"Examples: 'yo', 'bruh', 'fr fr', 'lol ok', 'nah bro', 'gg ez', 'omg lol'. "
+                    f"Message: {data.message}\n"
+                    f"Roblox kid says:"
+                ),
+                "stream": False,
+                "options": {
+                    "temperature": 1.2,
+                    "num_predict": 6,
+                    "num_ctx": 32,
+                    "stop": ["\n", ".", "!", "?", "Message", "Player", "says"]
+                }
+            },
+            timeout=8  # Longer timeout
         )
         
         if response.status_code == 200:
@@ -239,79 +220,16 @@ async def chat(data: Message):
                 logger.info(f"Using AI response: '{ai_reply}'")
                 return {"reply": ai_reply, "source": "ai"}
             else:
-                logger.info(f"AI response filtered out - too formal or invalid")
-        else:
-            logger.warning(f"AI API returned status code: {response.status_code}")
-            
-    except asyncio.TimeoutError:
-        logger.warning("AI request timed out")
+                logger.info(f"AI response filtered out - too formal")
+                
     except Exception as e:
         logger.error(f"AI generation failed: {str(e)}")
 
-    # Fallback to curated response
+    # Fallback
     curated_reply = get_curated(intent)
     logger.info(f"Using curated response: '{curated_reply}' (intent: {intent})")
     return {"reply": curated_reply, "source": "curated"}
 
-@app.post("/debug")
-async def debug_ai(data: Message):
-    """Debug endpoint to see raw AI responses"""
-    try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "qwen2:0.5b",
-                "prompt": (
-                    f'Reply like a roblox kid. Super short, max 6 words, '
-                    f'all lowercase, use slang like: lol bruh gg fr omg ngl bro ez ong bet yep nah. '
-                    f'No formal words. Message from player: "{data.message}"\n'
-                    f'Roblox kid reply:'
-                ),
-                "stream": False,
-                "options": {
-                    "temperature": 1.0,
-                    "num_predict": 12,
-                    "num_ctx": 64,
-                    "stop": ["\n", "Player", "Message", "->", ":", "Reply", "Response"]
-                }
-            },
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            raw = response.json().get("response", "")
-            cleaned = clean_reply(raw)
-            passes_filter = is_human_response(cleaned)
-            
-            return {
-                "raw_response": raw,
-                "cleaned_response": cleaned,
-                "passes_human_filter": passes_filter,
-                "intent": detect_intent(data.message),
-                "status": "success"
-            }
-        else:
-            return {"error": f"AI API returned {response.status_code}", "status": "error"}
-            
-    except Exception as e:
-        return {"error": str(e), "status": "error"}
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-@app.get("/ai-status")
-async def ai_status():
-    """Check if AI model is available"""
-    try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=2)
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            has_qwen = any("qwen2:0.5b" in model.get("name", "") for model in models)
-            return {
-                "ollama_running": True,
-                "qwen2_available": has_qwen,
-                "available_models": [model.get("name") for model in models]
-            }
-    except Exception as e:
-        return {"ollama_running": False, "error": str(e)}
